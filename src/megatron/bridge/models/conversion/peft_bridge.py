@@ -96,7 +96,7 @@ def _select_hf_base_param_name(base_mapping, adapter_key: Optional[str], expecte
 
     hf_param = base_mapping.hf_param
     if isinstance(hf_param, str):
-        return hf_param if hf_param.endswith(expected_suffix) else None
+        return hf_param
 
     if isinstance(hf_param, dict):
         if adapter_key:
@@ -108,7 +108,7 @@ def _select_hf_base_param_name(base_mapping, adapter_key: Optional[str], expecte
 
         # For fused qkv/gate_up case, we just need a placeholder here
         value = next(iter(hf_param.values()))
-        return value if value.endswith(expected_suffix) else None
+        return value
 
     return None
 
@@ -168,8 +168,13 @@ class MegatronPeftBridge:
         # Strip expert layers numbering
         base_suffix = base_suffix.rstrip(digits)
         hf_base_name = _select_hf_base_param_name(base_mapping, adapter_key, base_suffix)
-        if hf_base_name is None or not hf_base_name.endswith(base_suffix):
+        if hf_base_name is None:
             return None
+        
+        if not hf_base_name.endswith(base_suffix):
+            # Non-standard HF param naming without .weight suffix (e.g. GPT-OSS expert layers
+            # like "experts.gate_up_proj"), append the LoRA suffix directly.
+            return hf_base_name + hf_suffix
 
         return hf_base_name[: -len(base_suffix)] + hf_suffix
 
@@ -202,14 +207,15 @@ class MegatronPeftBridge:
     def _make_lora_param_name(self, base_name: str, megatron_adapter_suffix: str) -> Optional[str]:
         """Translate a base HF weight name into its LoRA-specific counterpart."""
 
-        if not base_name.endswith(".weight"):
-            return None
-
         hf_suffix = MEGATRON_TO_HF_LORA_SUFFIX.get(megatron_adapter_suffix)
         if hf_suffix is None:
             return None
+        
+        if base_name.endswith(".weight"):
+            return base_name[: -len(".weight")] + hf_suffix
 
-        return base_name[: -len(".weight")] + hf_suffix
+        # Non-standard HF param naming without .weight suffix (e.g. GPT-OSS expert layers).
+        return base_name + hf_suffix
 
     def _is_fused_qkv(self, hf_weight_names: Iterable[str]) -> bool:
         """Check whether the provided HF names correspond to a fused QKV weight."""
