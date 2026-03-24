@@ -24,6 +24,7 @@ from transformers import GenerationConfig, GptOssConfig, GptOssForCausalLM
 
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge, WeightConversionTask
+from megatron.bridge.models.conversion.peft_bridge import MEGATRON_TO_HF_LORA_SUFFIX
 from megatron.bridge.models.conversion.param_mapping import (
     AutoMapping,
     QKVMapping,
@@ -52,6 +53,29 @@ class GPTOSSBridge(MegatronModelBridge):
         # We need to cache the weights during import to load and dequantize the expert weights only once.
         # and we need to merge the weights of multiple experts during export.
         self.hf_weights_cache = {}
+
+    def _make_lora_param_name(self, base_name: str, megatron_suffix: str) -> Optional[str]:
+        """Override to handle GPT-OSS expert layers that lack a .weight suffix (e.g. 'experts.gate_up_proj')."""
+        hf_suffix = MEGATRON_TO_HF_LORA_SUFFIX.get(megatron_suffix)
+        if hf_suffix is None:
+            return None
+        if base_name.endswith(".weight"):
+            return base_name[: -len(".weight")] + hf_suffix
+        return base_name + hf_suffix
+
+    def _resolve_hf_adapter_param_name(self, mapping_registry, global_base_prefix, megatron_suffix, base_suffix, adapter_key):
+        """Override to handle GPT-OSS expert layers that lack a .weight suffix (e.g. 'experts.gate_up_proj')."""
+        result = super()._resolve_hf_adapter_param_name(mapping_registry, global_base_prefix, megatron_suffix, base_suffix, adapter_key)
+        if result is not None:
+            return result
+        # For expert layers the HF param has no .weight suffix; append the LoRA suffix directly.
+        hf_suffix = MEGATRON_TO_HF_LORA_SUFFIX.get(megatron_suffix)
+        if hf_suffix is None:
+            return None
+        base_mapping = mapping_registry.megatron_to_hf_lookup(f"{global_base_prefix}{base_suffix}")
+        if base_mapping is None or not isinstance(base_mapping.hf_param, str):
+            return None
+        return base_mapping.hf_param + hf_suffix
 
     def provider_bridge(
         self, hf_pretrained: PreTrainedCausalLM | GptOssConfig | _ConfigOnlyPretrainedShim
